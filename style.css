@@ -1,0 +1,13 @@
+body {
+  text-align: center;
+  font-family: sans-serif;
+}
+
+#pokemon-select button {
+  margin: 5px;
+}
+
+canvas {
+  border: 1px solid #333;
+  background: #eee;
+}
