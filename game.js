@@ -41,8 +41,15 @@ canvas.addEventListener('click', (e) => {
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
-  const choice = prompt('Choose Pokémon: bulbasaur / charmander / squirtle');
-  const type = pokemonTypes[choice?.toLowerCase()];
+  const choice = prompt(
+    'Choose Pokémon: bulbasaur (b) / charmander (c) / squirtle (s)'
+  );
+  const key = choice?.toLowerCase();
+  const selected =
+    key?.length === 1
+      ? Object.keys(pokemonTypes).find(name => name.startsWith(key))
+      : key;
+  const type = selected ? pokemonTypes[selected] : undefined;
   if (type) {
     turrets.push({ x, y, type, cooldown: 0 });
   }
