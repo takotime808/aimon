@@ -1,0 +1,14 @@
+// Copyright (c) 2025 takotime808
+{
+  "name": "aimon",
+  "version": "1.0.0",
+  "description": "# AI-Mon #",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests specified\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
