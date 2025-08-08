@@ -1,14 +1,13 @@
 /* Copyright (c) 2025 takotime808 */
 body {
-  text-align: center;
   font-family: sans-serif;
-}
-
-#pokemon-select button {
-  margin: 5px;
+  text-align: center;
+  background: #eef;
 }
 
 canvas {
+  background: #fff;
   border: 1px solid #333;
-  background: #eee;
+  margin: 0 auto;
+  display: block;
 }
