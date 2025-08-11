@@ -1,16 +1,226 @@
-<!-- Copyright (c) 2025 takotime808 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI-Mon Defense</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Mini Monster RPG — Custom Battle Sprites</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b0f15; }
+    #game { width: 100%; height: 100%; display:flex; align-items:center; justify-content:center; }
+    .phaser-parent { box-shadow: 0 10px 30px rgba(0,0,0,0.5); border-radius: 12px; overflow:hidden; }
+    @media (max-width: 820px){ .phaser-parent { width: 100%; height: 100%; border-radius: 0; box-shadow:none; } }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.0/dist/phaser.js"></script>
 </head>
 <body>
-  <h1>AI-Mon Defense</h1>
-  <p>Click anywhere on the field to place a Pokémon tower.</p>
-  <canvas id="game" width="800" height="600"></canvas>
-  <script src="game.js"></script>
+<div id="game"></div>
+<script>
+// --- Phaser 3 monster-taming demo with external monster art in battles ---
+// Paste your PNG URLs below. Transparent background recommended. ~512x512 looks great.
+const ASSET_URLS = {
+  1: null, // e.g. 'https://your.cdn/embercat.png'
+  2: null, // e.g. 'https://your.cdn/aquapup.png'
+  3: null, // e.g. 'https://your.cdn/leafling.png'
+};
+
+const TILE = 32;
+const VIEW_W = 768; // 24 tiles
+const VIEW_H = 512; // 16 tiles
+
+// ------------------ Data: Types, Moves, Monsters ------------------ //
+const Types = { FIRE:'FIRE', WATER:'WATER', GRASS:'GRASS', NORMAL:'NORMAL' };
+const TypeChart = {
+  FIRE:   { FIRE:0.5, WATER:0.5, GRASS:2.0, NORMAL:1.0 },
+  WATER:  { FIRE:2.0, WATER:0.5, GRASS:0.5, NORMAL:1.0 },
+  GRASS:  { FIRE:0.5, WATER:2.0, GRASS:0.5, NORMAL:1.0 },
+  NORMAL: { FIRE:1.0, WATER:1.0, GRASS:1.0, NORMAL:1.0 }
+};
+const Moves = {
+  TACKLE:{ name:'Tackle', type:Types.NORMAL, power:40, acc:1.0 },
+  EMBER:{ name:'Ember', type:Types.FIRE, power:40, acc:0.95 },
+  WATERGUN:{ name:'Water Gun', type:Types.WATER, power:40, acc:0.95 },
+  VINEWHIP:{ name:'Vine Whip', type:Types.GRASS, power:45, acc:0.95 },
+};
+const Dex = {
+  1:{ key:'embercat', name:'Embercat', type:Types.FIRE, color:0xff784e, base:{hp:39,atk:52,def:43,spd:65}, moves:[Moves.TACKLE, Moves.EMBER], capture:0.3 },
+  2:{ key:'aquapup', name:'Aquapup', type:Types.WATER, color:0x4ea3ff, base:{hp:44,atk:48,def:65,spd:43}, moves:[Moves.TACKLE, Moves.WATERGUN], capture:0.35 },
+  3:{ key:'leafling', name:'Leafling', type:Types.GRASS, color:0x66d17a, base:{hp:45,atk:49,def:49,spd:45}, moves:[Moves.TACKLE, Moves.VINEWHIP], capture:0.33 },
+};
+function makeMon(speciesId, level=5){
+  const s = Dex[speciesId];
+  const stats = calcStats(s.base, level);
+  return { speciesId, name:s.name, type:s.type, color:s.color, level, statsMax:{...stats}, stats:{...stats}, moves:s.moves.slice(), capture:s.capture };
+}
+function calcStats(base, level){
+  return { hp: Math.floor(((base.hp)*2*level)/100)+level+10, atk: Math.floor(((base.atk)*2*level)/100)+5, def: Math.floor(((base.def)*2*level)/100)+5, spd: Math.floor(((base.spd)*2*level)/100)+5 };
+}
+function typeEffectiveness(moveType, targetType){ return (TypeChart[moveType] && TypeChart[moveType][targetType]) || 1.0; }
+function dealDamage(attacker, defender, move){
+  if (Math.random()>move.acc) return { dmg:0, miss:true, crit:false, eff:1 };
+  const base = move.power * (attacker.stats.atk / Math.max(1, defender.stats.def));
+  const eff = typeEffectiveness(move.type, defender.type);
+  const rand = 0.85 + Math.random()*0.15;
+  const crit = Math.random() < 0.08;
+  const dmg = Math.max(1, Math.floor(base * eff * rand * (crit?1.5:1)));
+  defender.stats.hp = Math.max(0, defender.stats.hp - dmg);
+  return { dmg, miss:false, crit, eff };
+}
+function captureChance(mon){ const hpR = mon.stats.hp / mon.statsMax.hp; return Math.min(0.95, mon.capture + (1-hpR)*0.6); }
+
+// ------------------ Save/Load ------------------ //
+const SAVE_KEY='mini_mon_rpg_custom_art_v1';
+const saveGame = (s)=> localStorage.setItem(SAVE_KEY, JSON.stringify(s));
+const loadGame = ()=> { try{ return JSON.parse(localStorage.getItem(SAVE_KEY)); }catch{ return null; } };
+const clearSave = ()=> localStorage.removeItem(SAVE_KEY);
+
+// ------------------ UI Helpers ------------------ //
+function makeBtn(scene, x, y, w, h, label, cb, opts={}){
+  const { fill=0x1f2937, stroke=0x93c5fd, textColor='#e5e7eb', fontSize='18px' } = opts;
+  const box = scene.add.rectangle(x,y,w,h,fill,0.9).setStrokeStyle(2,stroke).setScrollFactor(0).setInteractive({ useHandCursor:true });
+  const txt = scene.add.text(x, y, label, { fontFamily:'monospace', fontSize, color:textColor }).setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor:true });
+  const c = scene.add.container(0,0,[box,txt]);
+  c.setScrollFactor(0);
+  const press = ()=>{ box.setScale(0.98); cb && cb(); };
+  const release = ()=> box.setScale(1);
+  [box, txt].forEach(s=>{ s.on('pointerdown', press); s.on('pointerup', release); s.on('pointerout', release); });
+  c.setDepth(1000);
+  c.destroyBtn = ()=>{ [box,txt].forEach(s=>s.destroy()); c.destroy(); };
+  return { box, txt, container:c };
+}
+
+// ------------------ Scenes ------------------ //
+class BootScene extends Phaser.Scene{ constructor(){ super('Boot'); }
+  preload(){
+    // Load external monster art if provided
+    Object.keys(Dex).forEach(id=>{ const url=ASSET_URLS[id]; if(url) this.load.image('mon-'+id, url); });
+  }
+  create(){
+    // Generate simple tiles + fallback monster art
+    const g = this.add.graphics();
+    g.fillStyle(0x2a3340).fillRect(0,0,TILE,TILE); g.generateTexture('tile-dark',TILE,TILE); g.clear();
+    g.fillStyle(0x324058).fillRect(0,0,TILE,TILE); g.generateTexture('tile-road',TILE,TILE); g.clear();
+    g.fillStyle(0x2f6d3f).fillRect(0,0,TILE,TILE);
+    g.lineStyle(2,0x3fa356,1); for(let i=0;i<6;i++){ g.beginPath(); g.moveTo(4+i*5,TILE-4); g.lineTo(4+i*5, 8+Math.random()*10); g.strokePath(); }
+    g.generateTexture('tile-grass',TILE,TILE); g.clear();
+    g.fillStyle(0x973a56).fillRect(0,0,TILE,TILE); g.fillStyle(0xffffff).fillRect(TILE/2-4,6,8,TILE-12); g.fillRect(6,TILE/2-4,TILE-12,8); g.generateTexture('tile-center',TILE,TILE); g.clear();
+
+    // Fallback monster art (used only if no external texture for that id)
+    for (const id of Object.keys(Dex)){
+      if (this.textures.exists('mon-'+id)) continue;
+      const c = Dex[id].color; g.fillStyle(c).fillRoundedRect(4,4,88,56,16);
+      g.lineStyle(4,0xffffff).strokeRoundedRect(4,4,88,56,16);
+      g.fillStyle(0x000000).fillCircle(28,32,4).fillCircle(60,32,4);
+      g.fillStyle(0xffffff).fillCircle(26,30,1.5).fillCircle(58,30,1.5);
+      // Smile mouth: Phaser 3 Graphics doesn't have quadraticBezierTo; use bezierCurveTo or fallback line
+      g.lineStyle(3,0x000000);
+      g.beginPath();
+      g.moveTo(36,44);
+      if (typeof g.bezierCurveTo === 'function') {
+        // Cubic bezier approximating a smile
+        g.bezierCurveTo(42,52,48,52,54,44);
+      } else {
+        // Fallback: simple line if bezier is unavailable
+        g.lineTo(54,44);
+      }
+      g.strokePath();
+
+      g.generateTexture('mon-'+id, 96, 64); g.clear();
+    }
+
+    this.scene.start('Overworld');
+  }
+}
+
+class Overworld extends Phaser.Scene{
+  constructor(){ super('Overworld'); this.moveFlags={left:false,right:false,up:false,down:false}; }
+  create(){
+    this.cameras.main.setBackgroundColor('#0b0f15');
+    this.mapW=40; this.mapH=30; this.map=[];
+    for(let y=0;y<this.mapH;y++){ const row=[]; for(let x=0;x<this.mapW;x++){ let t='tile-dark'; if(y>4&&y<24&&x>6&&x<33) t='tile-grass'; if(y===15&&x>1&&x<38) t='tile-road'; row.push(t);} this.map.push(row);}    
+    this.map[14][5]='tile-center';
+    this.layer=this.add.layer();
+    for(let y=0;y<this.mapH;y++){ for(let x=0;x<this.mapW;x++){ this.layer.add(this.add.image(x*TILE+TILE/2,y*TILE+TILE/2,this.map[y][x]).setOrigin(0.5)); } }
+
+    this.player = this.add.rectangle(7*TILE+16, 15*TILE+16, 22, 22, 0xf2f2f2); this.physics.add.existing(this.player);
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.keys = this.input.keyboard.addKeys('Z,X,C,V,P,I');
+
+    const save = loadGame(); this.party = (save&&save.party) ? save.party : [ makeMon(1,5) ]; saveGame({party:this.party});
+
+    this.encounterCooldown=0; this.cam=this.cameras.main; this.cam.setBounds(0,0,this.mapW*TILE,this.mapH*TILE); this.cam.startFollow(this.player,true,0.12,0.12);
+
+    this.uiText = this.add.text(8,8,'Move: D-Pad or Arrows  •  Confirm: Z / A  •  Menu: X / B',{fontFamily:'monospace',fontSize:'14px',color:'#cfe3ff'}).setScrollFactor(0);
+    this.interactText = this.add.text(8, VIEW_H-24,'',{fontFamily:'monospace',fontSize:'14px',color:'#e6ffd6'}).setScrollFactor(0);
+    this.time.addEvent({ delay:100, loop:true, callback:()=>{ if(this.encounterCooldown>0) this.encounterCooldown--; }});
+
+    // Virtual Controls
+    this.buildDPad(); this.buildAB();
+  }
+  buildDPad(){ const baseX=80, baseY=VIEW_H-120, s=52; this.btnUp = makeBtn(this, baseX, baseY- s, 56, 44, '\u25B2', ()=> this.moveFlags.up=true, {fontSize:'22px'}); this.btnDown = makeBtn(this, baseX, baseY+ s, 56, 44, '\u25BC', ()=> this.moveFlags.down=true, {fontSize:'22px'}); this.btnLeft = makeBtn(this, baseX- s, baseY, 56, 44, '\u25C0', ()=> this.moveFlags.left=true, {fontSize:'22px'}); this.btnRight= makeBtn(this, baseX+ s, baseY, 56, 44, '\u25B6', ()=> this.moveFlags.right=true, {fontSize:'22px'}); this.input.on('pointerup', ()=>{ this.moveFlags={left:false,right:false,up:false,down:false}; }); this.input.on('pointerout', ()=>{ this.moveFlags={left:false,right:false,up:false,down:false}; }); }
+  buildAB(){ const ax=VIEW_W-120, ay=VIEW_H-120; this.btnA = makeBtn(this, ax, ay, 64, 64, 'A', ()=> this.handleConfirm(), {fill:0x14532d, stroke:0x22c55e, fontSize:'22px'}); this.btnB = makeBtn(this, ax-84, ay+44, 56, 56, 'B', ()=> this.handleCancelOrMenu(), {fill:0x3f1d1d, stroke:0xf87171, fontSize:'20px'}); }
+  handleConfirm(){ const px = Math.floor(this.player.x/TILE), py=Math.floor(this.player.y/TILE); const tileKey=(this.map[py]||[])[px]; if (tileKey==='tile-center'){ this.party.forEach(m=> m.stats={...m.statsMax}); this.showToast('Your party was fully healed!'); } }
+  handleCancelOrMenu(){ this.openMenu(); }
+  update(){
+    const speed=140; const body=this.player.body; body.setVelocity(0);
+    const left = this.cursors.left.isDown || this.moveFlags.left;
+    const right= this.cursors.right.isDown|| this.moveFlags.right;
+    const up   = this.cursors.up.isDown   || this.moveFlags.up;
+    const down = this.cursors.down.isDown || this.moveFlags.down;
+    if (left&&!right) body.setVelocityX(-speed); else if (right&&!left) body.setVelocityX(speed);
+    if (up&&!down) body.setVelocityY(-speed); else if (down&&!up) body.setVelocityY(speed);
+
+    const px = Math.floor(this.player.x/TILE), py=Math.floor(this.player.y/TILE); const tileKey=(this.map[py]||[])[px];
+    if (tileKey==='tile-center'){ this.interactText.setText('Tap A (or press Z) to heal your party'); } else this.interactText.setText('');
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.X)) this.openMenu();
+    if (Phaser.Input.Keyboard.JustDown(this.keys.C)){ saveGame({party:this.party}); this.showToast('Game saved.'); }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)){ clearSave(); this.showToast('Save cleared.'); }
+
+    if (tileKey==='tile-grass' && this.encounterCooldown===0){ if (Math.random()<0.02){ this.encounterCooldown=50; const wildId=Phaser.Math.RND.pick([1,2,3]); const level=3+Math.floor(Math.random()*5); const wild=makeMon(wildId,level); this.scene.launch('Battle',{party:this.party, wild}); this.scene.pause(); } }
+  }
+  openMenu(){ const partyLines=this.party.map((m,i)=>`#${i+1} ${m.name} Lv.${m.level} HP ${m.stats.hp}/${m.statsMax.hp}`).join('\n'); this.showDialog('[Party]\n'+partyLines+'\n\nPress P (or tap A) to heal, I for info.'); const hk=this.input.keyboard.addKeys('P,I'); const onKey=(ev)=>{ if(ev.code==='KeyP'){ this.party.forEach(m=> m.stats={...m.statsMax}); this.showToast('Party healed.'); } else if(ev.code==='KeyI'){ const m=this.party[0]; this.showDialog(`${m.name} (Lv.${m.level})\nType: ${m.type}\nMoves: ${m.moves.map(x=>x.name).join(', ')}`); } window.removeEventListener('keydown', onKey); }; window.addEventListener('keydown', onKey); }
+  showToast(msg){ if(this.toast) this.toast.destroy(); this.toast=this.add.text(VIEW_W/2,24,msg,{fontFamily:'monospace',fontSize:'16px',color:'#fff',backgroundColor:'#223',padding:{x:8,y:4}}).setScrollFactor(0).setOrigin(0.5,0); this.tweens.add({targets:this.toast,alpha:0,y:0,duration:2200,ease:'Sine.easeIn', onComplete:()=>this.toast&&this.toast.destroy()}); }
+  showDialog(text){ if(this.dialogBox) this.dialogBox.destroy(); const box=this.add.rectangle(VIEW_W/2, VIEW_H-100, VIEW_W-40, 120, 0x101418,0.9).setScrollFactor(0).setStrokeStyle(2,0x89b4ff); const t=this.add.text(box.x-box.width/2+16, box.y-box.height/2+12, text, {fontFamily:'monospace',fontSize:'16px',color:'#d7e3ff', wordWrap:{width:box.width-24}}).setScrollFactor(0); this.dialogBox=this.add.container(0,0,[box,t]); this.time.delayedCall(2600, ()=>{ this.dialogBox.destroy(); }); }
+}
+
+class Battle extends Phaser.Scene{
+  constructor(){ super('Battle'); }
+  init(d){ this.party=d.party; this.wild=d.wild; }
+  create(){
+    this.cameras.main.setBackgroundColor('#0f1220');
+    this.add.rectangle(VIEW_W/2,110,VIEW_W-40,160,0x0d1b2a,0.95).setStrokeStyle(2,0x5eead4);
+    this.add.rectangle(VIEW_W/2,VIEW_H-100,VIEW_W-40,160,0x0d1b2a,0.95).setStrokeStyle(2,0x93c5fd);
+
+    this.playerMon=this.party[0];
+    this.playerSprite=this.add.image(160, VIEW_H-180, 'mon-'+this.playerMon.speciesId).setScale(1.8).setFlipX(true);
+    this.wildSprite=this.add.image(VIEW_W-160, 140, 'mon-'+this.wild.speciesId).setScale(1.8);
+
+    const usingCustom = this.textures.get('mon-'+this.wild.speciesId).source[0]?.image?.src?.startsWith('data:')===false;
+    this.infoText=this.add.text(30,24,`A wild ${this.wild.name} appeared!`,{fontFamily:'monospace',fontSize:'18px',color:'#e2e8f0'});
+
+    this.playerHp=this.makeHpBar(40, VIEW_H-200, this.playerMon);
+    this.wildHp=this.makeHpBar(VIEW_W-360, 40, this.wild);
+
+    this.menu=this.makeMenu();
+    this.state='PLAYER_SELECT';
+  }
+  makeHpBar(x,y,mon){ const c=this.add.container(x,y); const bg=this.add.rectangle(0,0,320,56,0x0b1220).setOrigin(0); const name=this.add.text(10,6,`${mon.name} Lv.${mon.level}`,{fontFamily:'monospace',fontSize:'16px',color:'#dce7ff'}); const bar=this.add.rectangle(10,30,300,16,0x22c55e).setOrigin(0,0.5); const hpText=this.add.text(10,44,`${mon.stats.hp}/${mon.statsMax.hp}`,{fontFamily:'monospace',fontSize:'14px',color:'#cbd5e1'}); c.add([bg,name,bar,hpText]); c.refresh=()=>{ const r=mon.stats.hp/mon.statsMax.hp; bar.width=300*r; bar.fillColor= r>0.5?0x22c55e : r>0.2?0xeab308 : 0xef4444; hpText.setText(`${mon.stats.hp}/${mon.statsMax.hp}`); }; c.refresh(); return c; }
+  makeMenu(){ const box=this.add.rectangle(VIEW_W/2, VIEW_H-60, VIEW_W-60, 100, 0x0b1220, 0.95).setStrokeStyle(2,0xffffff); const opts=['Fight','Bag','Catch','Run']; const texts=opts.map((s,i)=> this.add.text(box.x-box.width/2+20+i*(box.width/4), box.y-12, s, {fontFamily:'monospace',fontSize:'18px',color:'#e5e7eb'}).setOrigin(0,0.5).setInteractive({useHandCursor:true})); let idx=0; texts[idx].setStyle({backgroundColor:'#1e293b'}); const updateSel=()=> texts.forEach((t,i)=> t.setStyle({ backgroundColor: i===idx ? '#1e293b' : undefined })); this.input.keyboard.on('keydown-LEFT', ()=>{ idx=(idx+opts.length-1)%opts.length; updateSel(); }); this.input.keyboard.on('keydown-RIGHT', ()=>{ idx=(idx+1)%opts.length; updateSel(); }); this.input.keyboard.on('keydown-Z', ()=> this.activateChoice(opts[idx])); texts.forEach((t,i)=> t.on('pointerdown', ()=>{ idx=i; updateSel(); this.activateChoice(opts[idx]); })); return { box, texts, get index(){return idx;} }; }
+  activateChoice(choice){ if(this.state!=='PLAYER_SELECT') return; if(choice==='Fight') this.chooseMove(); else if(choice==='Bag') this.usePotion(); else if(choice==='Catch') this.tryCatch(); else if(choice==='Run') this.tryRun(); }
+  chooseMove(){ const mvs=this.playerMon.moves; const box=this.add.rectangle(VIEW_W/2, VIEW_H-170, VIEW_W-60, 110, 0x101826,0.95).setStrokeStyle(2,0x7dd3fc); const txts=mvs.map((m,i)=> this.add.text(box.x-box.width/2+20+i*(box.width/mvs.length), box.y, `${m.name}\n${m.type}`, {fontFamily:'monospace',fontSize:'16px',color:'#e5e7eb',align:'center'}).setOrigin(0,0.5).setInteractive({useHandCursor:true})); let idx=0; txts[idx].setStyle({backgroundColor:'#1e293b'}); const sel=()=> txts.forEach((t,i)=> t.setStyle({ backgroundColor: i===idx ? '#1e293b' : undefined })); const left=this.input.keyboard.on('keydown-LEFT', ()=>{ idx=(idx+mvs.length-1)%mvs.length; sel(); }); const right=this.input.keyboard.on('keydown-RIGHT', ()=>{ idx=(idx+1)%mvs.length; sel(); }); const z=this.input.keyboard.on('keydown-Z', ()=>{ cleanup(); this.playerAttack(mvs[idx]); }); const x=this.input.keyboard.on('keydown-X', ()=>{ cleanup(); }); txts.forEach((t,i)=> t.on('pointerdown', ()=>{ idx=i; sel(); cleanup(); this.playerAttack(mvs[idx]); })); const cleanup=()=>{ box.destroy(); txts.forEach(t=>t.destroy()); this.input.keyboard.off('keydown-LEFT', left); this.input.keyboard.off('keydown-RIGHT', right); this.input.keyboard.off('keydown-Z', z); this.input.keyboard.off('keydown-X', x); }; }
+  playerAttack(move){ this.state='ANIM'; const res=dealDamage(this.playerMon,this.wild,move); this.flash(this.wildSprite); this.wildHp.refresh(); this.showBattleText(`${this.playerMon.name} used ${move.name}!` + (res.miss?' It missed!':'') + (res.crit?' Critical hit!':'') + (res.eff>1?' Super effective!': (res.eff<1?' Not very effective.':''))); if(this.wild.stats.hp<=0) return this.endBattle('WIN'); this.time.delayedCall(600, ()=> this.enemyTurn()); }
+  enemyTurn(){ const move=Phaser.Utils.Array.GetRandom(this.wild.moves); const res=dealDamage(this.wild,this.playerMon,move); this.flash(this.playerSprite); this.playerHp.refresh(); this.showBattleText(`Wild ${this.wild.name} used ${move.name}!` + (res.miss?' It missed!':'') + (res.crit?' Critical hit!':'') + (res.eff>1?' Super effective!': (res.eff<1?' Not very effective.':''))); if(this.playerMon.stats.hp<=0) return this.endBattle('LOSE'); this.state='PLAYER_SELECT'; }
+  usePotion(){ const heal=Math.min(20, this.playerMon.statsMax.hp - this.playerMon.stats.hp); if(heal<=0){ this.showBattleText('HP is already full.'); return; } this.playerMon.stats.hp+=heal; this.playerHp.refresh(); this.showBattleText(`Used a Potion! Recovered ${heal} HP.`); this.time.delayedCall(600, ()=> this.enemyTurn()); }
+  tryCatch(){ const p=captureChance(this.wild); if(Math.random()<p){ if(this.party.length<6) this.party.push(this.wild); this.showBattleText(`Gotcha! ${this.wild.name} was caught!`); this.time.delayedCall(600, ()=> this.endBattle('CATCH')); } else { this.showBattleText('Oh no! It broke free!'); this.time.delayedCall(600, ()=> this.enemyTurn()); } }
+  tryRun(){ const chance=this.playerMon.stats.spd>=this.wild.stats.spd?0.9:0.5; if(Math.random()<chance){ this.showBattleText('Got away safely.'); this.time.delayedCall(400, ()=> this.endBattle('RUN')); } else { this.showBattleText("Can't escape!"); this.time.delayedCall(600, ()=> this.enemyTurn()); } }
+  endBattle(result){ this.showBattleText(result==='WIN'?`Wild ${this.wild.name} fainted!`: result==='LOSE'?`${this.playerMon.name} fainted...`:'Battle ended.'); this.time.delayedCall(700, ()=>{ saveGame({party:this.party}); this.scene.stop(); this.scene.resume('Overworld'); }); }
+  showBattleText(msg){ if(this.bt) this.bt.destroy(); const box=this.add.rectangle(VIEW_W/2, VIEW_H-220, VIEW_W-60, 60, 0x0b1220,0.95).setStrokeStyle(2,0x7dd3fc); const t=this.add.text(box.x-box.width/2+12, box.y-18, msg,{fontFamily:'monospace',fontSize:'16px',color:'#e5e7eb'}); this.bt=this.add.container(0,0,[box,t]); this.time.delayedCall(1200, ()=>{ if(this.bt){ this.bt.destroy(); this.bt=null; } }); }
+  flash(sprite){ this.tweens.add({targets:sprite,alpha:0.2,yoyo:true,duration:70,repeat:2}); }
+}
+
+// ------------------ Game Config ------------------ //
+const config={ type:Phaser.AUTO, width:VIEW_W, height:VIEW_H, parent:'game', backgroundColor:'#0b0f15', physics:{ default:'arcade', arcade:{ debug:false } }, scene:[BootScene, Overworld, Battle] };
+new Phaser.Game(config);
+</script>
 </body>
 </html>
